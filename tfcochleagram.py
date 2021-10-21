@@ -12,8 +12,8 @@ import functools
 # TODO: the gradients through the log function will be unstable. Include offset or similar for stability, 
 def tflog10(x):
     """Implements log base 10 in tensorflow """
-    numerator = tf.log(x)
-    denominator = tf.log(tf.constant(10, dtype=numerator.dtype))
+    numerator = tf.math.log(x)
+    denominator = tf.math.log(tf.constant(10, dtype=numerator.dtype))
     return numerator / denominator
 
 @tf.custom_gradient
@@ -27,7 +27,7 @@ def clipped_power_compression(x):
     p = tf.pow(e,0.3)
     def grad(dy): #try to check for nans before we clip the gradients. (use tf.where)
         g = 0.3 * pow(e,-0.7)
-        is_nan_values = tf.is_nan(g)
+        is_nan_values = tf.math.is_nan(g)
         replace_nan_values = tf.ones(tf.shape(g), dtype=tf.float32)*1
         return dy * tf.where(is_nan_values,replace_nan_values,tf.clip_by_value(g, -1, 1))
     return p, grad
@@ -163,10 +163,9 @@ def preprocess_input(nets, SIGNAL_SIZE, input_node, mean_subtract, rms_normalize
 
     """
     
-    if rFFT:
-        if SIGNAL_SIZE%2!=0:
-            print('rFFT is only tested with even length signals. Change your input length.')
-            return
+    if rFFT and (SIGNAL_SIZE%2 != 0):
+        print('rFFT is only tested with even length signals. Change your input length.')
+        return
     
     processed_input_node = input_node
     
@@ -209,9 +208,9 @@ def fft_of_input(nets, pad_factor, rFFT):
     if not rFFT:
         if pad_factor is not None:
             nets['input_signal_complex'] = tf.concat([nets['input_signal_complex'], tf.zeros([nets['input_signal_complex'].get_shape()[0], nets['input_signal_complex'].get_shape()[1]*(pad_factor-1)], dtype=tf.complex64)], axis=1)
-        nets['fft_input'] = tf.fft(nets['input_signal_complex'],name='fft_of_input')
+        nets['fft_input'] = tf.signal.fft(nets['input_signal_complex'],name='fft_of_input')
     else: 
-        nets['fft_input'] = tf.spectral.rfft(nets['input_real'],name='fft_of_input') # Since the DFT of a real signal is Hermitian-symmetric, RFFT only returns the fft_length / 2 + 1 unique components of the FFT: the zero-frequency term, followed by the fft_length / 2 positive-frequency terms.
+        nets['fft_input'] = tf.signal.rfft(nets['input_real'],name='fft_of_input') # Since the DFT of a real signal is Hermitian-symmetric, RFFT only returns the fft_length / 2 + 1 unique components of the FFT: the zero-frequency term, followed by the fft_length / 2 positive-frequency terms.
 
     nets['fft_input'] = tf.expand_dims(nets['fft_input'], 1, name='exd_fft_of_input')
 
@@ -268,9 +267,9 @@ def extract_cochlear_subbands(nets, SIGNAL_SIZE, SR, LOW_LIM, HIGH_LIM, N, SAMPL
     # make the time the keys in the graph if we are returning all keys (otherwise, only return the subbands in fourier domain)
     if include_all_keys:
         if not rFFT:
-            nets['subbands_ifft'] = tf.real(tf.ifft(nets['subbands'],name='ifft_subbands'),name='ifft_subbands_r')
+            nets['subbands_ifft'] = tf.math.real(tf.signal.ifft(nets['subbands'],name='ifft_subbands'),name='ifft_subbands_r')
         else:
-            nets['subbands_ifft'] = tf.spectral.irfft(nets['subbands'],name='ifft_subbands')
+            nets['subbands_ifft'] = tf.signal.irfft(nets['subbands'],name='ifft_subbands')
         nets['subbands_time'] = nets['subbands_ifft']
 
     return nets
@@ -313,7 +312,7 @@ def hilbert_transform_from_fft(nets, SR, SIGNAL_SIZE, pad_factor, rFFT):
         nets['envelopes_freq'] = tf.concat([nets['subbands'],nets['hilbert_padding']],2,name='env_freq')
 
     # fft of the envelopes.
-    nets['envelopes_time'] = tf.ifft(nets['envelopes_freq'],name='ifft_envelopes')
+    nets['envelopes_time'] = tf.signal.ifft(nets['envelopes_freq'],name='ifft_envelopes')
 
     if not rFFT: # TODO: was this a bug in pycochleagram where the pad factor doesn't actually work? 
         if pad_factor is not None:
@@ -339,7 +338,11 @@ def abs_envelopes(nets, SMOOTH_ABS):
     """
 
     if SMOOTH_ABS:
-        nets['envelopes_abs'] = tf.sqrt(1e-10 + tf.square(tf.real(nets['envelopes_time'])) + tf.square(tf.imag(nets['envelopes_time'])))
+        nets['envelopes_abs'] = tf.sqrt(
+            1e-10 +
+            tf.square(tf.math.real(nets['envelopes_time'])) +
+            tf.square(tf.math.imag(nets['envelopes_time']))
+        )
     else:
         nets['envelopes_abs'] = tf.abs(nets['envelopes_time'], name='complex_abs_envelopes')
     nets['envelopes_abs'] = tf.expand_dims(nets['envelopes_abs'],3, name='exd_abs_real_envelopes')
@@ -547,7 +550,7 @@ def make_downsample_filt_tensor(SR=16000, ENV_SR=200, WINDOW_SIZE=1001, pycoch_d
         if max_rate!=1:    
             downsample_filter_response = signal.firwin(2 * half_len + 1, f_c, window=('kaiser', 5.0))
         else:
-            downsample_filter_response = zeros(2 * half_len + 1)
+            downsample_filter_response = np.zeros(2 * half_len + 1)
             downsample_filter_response[half_len + 1] = 1
             
     downsample_filt_tensor = tf.constant(downsample_filter_response, tf.float32)
@@ -571,6 +574,7 @@ def reshape_coch_kell_2018(nets):
     nets['max_cochleagram'] = tf.reduce_max(nets['cochleagram'])
     # it is possible that this scaling is going to mess up the gradients for the waveform generation
     nets['scaled_cochleagram'] = 255*(1-((nets['max_cochleagram']-nets['cochleagram'])/(nets['max_cochleagram']-nets['min_cochleagram'])))
-    nets['reshaped_cochleagram'] = tf.image.resize_images(nets['scaled_cochleagram'],[256,256], align_corners=False, preserve_aspect_ratio=False)
+    # nets['reshaped_cochleagram'] = tf.image.resize_images(nets['scaled_cochleagram'],[256,256], align_corners=False, preserve_aspect_ratio=False)
+    nets['reshaped_cochleagram'] = tf.image.resize(nets['scaled_cochleagram'], [256,256], preserve_aspect_ratio=False)
     return nets, 'reshaped_cochleagram'
 
